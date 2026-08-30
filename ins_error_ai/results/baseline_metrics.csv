@@ -1,0 +1,6 @@
+Metric,Value
+Position RMSE (m),3198621.4761254527
+Position MAE (m),2395705.0702135465
+Final Position Error (m),6930564.692544314
+Velocity RMSE (m/s),1527.94150206291
+Velocity MAE (m/s),1345.7904792960371
