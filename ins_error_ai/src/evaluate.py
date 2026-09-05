@@ -29,12 +29,14 @@ def load_ai_corrector():
     """Try to load the trained AI model. Returns None if not available."""
     try:
         from src.inference import LiveErrorCorrector
-        model_path = os.path.join(config.MODEL_DIR, "ins_error_model_final.keras")
-        stats_path = os.path.join(config.MODEL_DIR, "normalization_stats.npz")
-        if os.path.exists(model_path) and os.path.exists(stats_path):
-            return LiveErrorCorrector(model_path, stats_path)
+        for name in ["ins_error_model_best.keras", "ins_error_model_final.keras"]:
+            model_path = os.path.join(config.MODEL_DIR, name)
+            stats_path = os.path.join(config.MODEL_DIR, "normalization_stats.npz")
+            if os.path.exists(model_path) and os.path.exists(stats_path):
+                return LiveErrorCorrector(model_path, stats_path)
         return None
-    except Exception:
+    except Exception as e:
+        print(f"Error loading AI corrector: {e}")
         return None
 
 
@@ -213,16 +215,32 @@ def evaluate_session(session, corrector):
             ai_pos_x, ai_pos_y, _, _ = result
             ai_drift = compute_drift_pct(ai_pos_x, ai_pos_y, true_pos_x, true_pos_y)
 
-    # --- Method 3: Full EKF (INS + AI + GNSS) ---
+    # --- Method 3: Traditional Continuous EKF (INS + AI + GNSS) ---
     ekf_result = run_ekf_fusion(
         ins_df, ai_corrections=ai_corrections,
         gnss_available=gps_available,
         gnss_pos=gps_pos,
         gnss_accuracy=gps_accuracy,
+        use_seamless_switching=False,
     )
     ekf_drift = compute_drift_pct(
         ekf_result["pos_x"], ekf_result["pos_y"],
         true_pos_x, true_pos_y)
+
+    # --- Method 4: Seamless Adaptive EKF (GNSS ⇄ AI-IDR State Machine + Battery Gating) ---
+    seamless_result = run_ekf_fusion(
+        ins_df, ai_corrections=ai_corrections,
+        gnss_available=gps_available,
+        gnss_pos=gps_pos,
+        gnss_accuracy=gps_accuracy,
+        use_seamless_switching=True,
+    )
+    seamless_drift = compute_drift_pct(
+        seamless_result["pos_x"], seamless_result["pos_y"],
+        true_pos_x, true_pos_y)
+
+    bat_summary = seamless_result.get("battery_summary", {})
+    battery_savings_pct = bat_summary.get("battery_savings_pct", 0.0)
 
     return {
         "session": session["name"],
@@ -231,6 +249,8 @@ def evaluate_session(session, corrector):
         "ins_drift": ins_drift,
         "ai_drift": ai_drift,
         "ekf_drift": ekf_drift,
+        "seamless_drift": seamless_drift,
+        "battery_savings": battery_savings_pct,
     }
 
 
@@ -240,9 +260,9 @@ def main():
         print("No sessions found. Check config.DATASET_ROOT.")
         return
 
-    print(f"{'='*70}")
-    print(f"  EVALUATION: {len(sessions)} sessions")
-    print(f"{'='*70}\n")
+    print(f"{'='*85}")
+    print(f"  EVALUATION WITH SEAMLESS ADAPTIVE GNSS <-> AI SWITCHING: {len(sessions)} sessions")
+    print(f"{'='*85}\n")
 
     corrector = load_ai_corrector()
     if corrector is None:
@@ -256,56 +276,59 @@ def main():
             if r is not None:
                 results.append(r)
                 print(f"INS={r['ins_drift']:.1f}%  AI={r['ai_drift']:.1f}%  "
-                      f"EKF={r['ekf_drift']:.1f}%")
+                      f"EKF={r['ekf_drift']:.1f}%  Seamless={r['seamless_drift']:.1f}%  "
+                      f"BatSaved={r['battery_savings']:.1f}%", flush=True)
             else:
-                print("skipped")
+                print("skipped", flush=True)
         except Exception as e:
-            print(f"ERROR: {e}")
+            print(f"ERROR: {e}", flush=True)
 
     if not results:
         print("\nNo sessions evaluated successfully.")
         return
 
     # --- Summary table ---
-    print(f"\n{'='*70}")
-    print(f"  THREE-WAY COMPARISON ({len(results)} sessions)")
-    print(f"{'='*70}")
-    print(f"  {'Session':<15} {'Duration':>8} {'INS Drift%':>12} {'AI Drift%':>12} {'EKF Drift%':>12}")
-    print(f"  {'-'*59}")
+    print(f"\n{'='*85}")
+    print(f"  FOUR-WAY NAVIGATION & BATTERY COMPARISON ({len(results)} sessions)")
+    print(f"{'='*85}")
+    print(f"  {'Session':<12} {'Duration':>8} {'INS Drift%':>11} {'AI Drift%':>11} {'EKF Drift%':>11} {'Seamless%':>11} {'BatSaved%':>10}")
+    print(f"  {'-'*79}")
 
     for r in results:
-        ai_str = f"{r['ai_drift']:>12.2f}" if r['ai_drift'] < 1e6 else f"{'N/A':>12}"
-        print(f"  {r['session']:<15} {r['duration']:>7.0f}s {r['ins_drift']:>12.2f} "
-              f"{ai_str} {r['ekf_drift']:>12.2f}")
-
-    print(f"  {'-'*59}")
+        ai_str = f"{r['ai_drift']:>11.2f}" if r['ai_drift'] < 1e6 else f"{'N/A':>11}"
+        print(f"  {r['session']:<12} {r['duration']:>7.0f}s {r['ins_drift']:>11.2f} "
+              f"{ai_str} {r['ekf_drift']:>11.2f} {r['seamless_drift']:>11.2f} {r['battery_savings']:>9.1f}%")
+    print(f"{'='*85}")
 
     ins_drifts = [r["ins_drift"] for r in results if r["ins_drift"] < 1e6 and not np.isnan(r["ins_drift"])]
     ai_drifts = [r["ai_drift"] for r in results if r["ai_drift"] < 1e6 and not np.isnan(r["ai_drift"])]
     ekf_drifts = [r["ekf_drift"] for r in results if r["ekf_drift"] < 1e6 and not np.isnan(r["ekf_drift"])]
+    seamless_drifts = [r["seamless_drift"] for r in results if r["seamless_drift"] < 1e6 and not np.isnan(r["seamless_drift"])]
+    battery_savings = [r["battery_savings"] for r in results]
 
-    print(f"  {'MEAN':<15} {'':>8} ", end="")
-    print(f"{np.mean(ins_drifts):>12.2f} " if ins_drifts else f"{'N/A':>12} ", end="")
-    print(f"{np.mean(ai_drifts):>12.2f} " if ai_drifts else f"{'N/A':>12} ", end="")
-    print(f"{np.mean(ekf_drifts):>12.2f}" if ekf_drifts else f"{'N/A':>12}")
+    print(f"  {'MEAN':<12} {'':>8} ", end="")
+    print(f"{np.mean(ins_drifts):>11.2f} " if ins_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.mean(ai_drifts):>11.2f} " if ai_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.mean(ekf_drifts):>11.2f} " if ekf_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.mean(seamless_drifts):>11.2f} " if seamless_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.mean(battery_savings):>9.1f}%" if battery_savings else f"{'N/A':>9}")
 
-    print(f"  {'MEDIAN':<15} {'':>8} ", end="")
-    print(f"{np.median(ins_drifts):>12.2f} " if ins_drifts else f"{'N/A':>12} ", end="")
-    print(f"{np.median(ai_drifts):>12.2f} " if ai_drifts else f"{'N/A':>12} ", end="")
-    print(f"{np.median(ekf_drifts):>12.2f}" if ekf_drifts else f"{'N/A':>12}")
+    print(f"  {'MEDIAN':<12} {'':>8} ", end="")
+    print(f"{np.median(ins_drifts):>11.2f} " if ins_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.median(ai_drifts):>11.2f} " if ai_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.median(ekf_drifts):>11.2f} " if ekf_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.median(seamless_drifts):>11.2f} " if seamless_drifts else f"{'N/A':>11} ", end="")
+    print(f"{np.median(battery_savings):>9.1f}%" if battery_savings else f"{'N/A':>9}")
 
-    print(f"\n{'='*70}")
+    print(f"\n{'='*85}")
 
     # Show improvement
-    if ai_drifts and ins_drifts:
-        ai_improvement = (1 - np.mean(ai_drifts) / np.mean(ins_drifts)) * 100
-        print(f"  AI correction reduces drift by: {ai_improvement:.1f}% vs raw INS (Mean)")
-    if ekf_drifts and ins_drifts:
-        ekf_improvement = (1 - np.mean(ekf_drifts) / np.mean(ins_drifts)) * 100
-        print(f"  Full EKF reduces drift by:      {ekf_improvement:.1f}% vs raw INS (Mean)")
-    if ekf_drifts and ai_drifts:
-        ekf_vs_ai = (1 - np.mean(ekf_drifts) / np.mean(ai_drifts)) * 100
-        print(f"  Full EKF reduces drift by:      {ekf_vs_ai:.1f}% vs AI-corrected alone (Mean)")
+    if seamless_drifts and ins_drifts:
+        seamless_imp = (1 - np.mean(seamless_drifts) / np.mean(ins_drifts)) * 100
+        print(f"  Seamless Adaptive EKF reduces drift by: {seamless_imp:.1f}% vs raw INS (Mean)")
+    if battery_savings:
+        print(f"  Average AI Battery Energy Saved:         {np.mean(battery_savings):.1f}% (AI Duty Cycle Off)")
+
     
     # Explicitly report failed/excluded sessions count
     failed_sessions = [r["session"] for r in results if np.isnan(r["ekf_drift"]) or np.isinf(r["ekf_drift"]) or r["ekf_drift"] > 1e6]

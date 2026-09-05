@@ -39,13 +39,13 @@ def load_ai_corrector():
     """Try to load the trained AI model. Returns None if not available."""
     try:
         from src.inference import LiveErrorCorrector
-        model_path = os.path.join(config.MODEL_DIR, "ins_error_model_final.keras")
-        stats_path = os.path.join(config.MODEL_DIR, "normalization_stats.npz")
-        if os.path.exists(model_path) and os.path.exists(stats_path):
-            return LiveErrorCorrector(model_path, stats_path)
-        else:
-            print("[pipeline] Trained model not found. Running without AI correction.")
-            return None
+        for name in ["ins_error_model_best.keras", "ins_error_model_final.keras"]:
+            model_path = os.path.join(config.MODEL_DIR, name)
+            stats_path = os.path.join(config.MODEL_DIR, "normalization_stats.npz")
+            if os.path.exists(model_path) and os.path.exists(stats_path):
+                return LiveErrorCorrector(model_path, stats_path)
+        print("[pipeline] Trained model not found. Running without AI correction.")
+        return None
     except Exception as e:
         print(f"[pipeline] Could not load AI model: {e}")
         return None

@@ -159,7 +159,30 @@ EKF_R_AI_VEL_STD = 0.5    # m/s — trust AI corrections moderately
 GNSS_BLACKOUT_THRESHOLD_M = 50.0
 
 # ---------------------------------------------------------------------------
-# 6. GNSS BLACKOUT SIMULATION
+# 6. SEAMLESS ADAPTIVE GNSS ⇄ AI-IDR SWITCHING & BATTERY OPTIMIZATION
+# ---------------------------------------------------------------------------
+# Signal Quality Thresholds
+GNSS_THRESHOLD_GOOD_M = 10.0      # GPS accuracy <= 10m is GOOD
+GNSS_THRESHOLD_DEGRADED_M = 25.0  # GPS accuracy <= 25m is DEGRADED, >25m or blackout is LOST
+GNSS_MIN_SATS_GOOD = 6            # Minimum satellite count for GOOD state
+
+# Hysteresis Debounce Counters (at ~10 Hz sample rate)
+N_RECOVERY_CYCLES = 20            # 2.0 seconds stable GOOD signal to transition from DEGRADED/LOST -> GOOD
+N_DEGRADE_CYCLES = 5              # 0.5 seconds unstable signal to transition -> DEGRADED
+N_LOST_CYCLES = 10                # 1.0 seconds poor/missing signal to transition -> LOST
+
+# Innovation Gating (Mahalanobis distance chi-square threshold for 2D position, 99% confidence)
+EKF_INNOVATION_GATE_CHI2 = 9.21
+
+# Battery Optimization Flag (AI Sleeping in GOOD state)
+AI_SLEEP_ON_GOOD_GNSS = True
+
+# Non-Holonomic Constraint (NHC) noise std
+NHC_LATERAL_VEL_STD = 0.2         # m/s — zero lateral velocity constraint
+
+# ---------------------------------------------------------------------------
+# 7. GNSS BLACKOUT SIMULATION
 # ---------------------------------------------------------------------------
 BLACKOUT_DURATION_S = 60     # seconds of simulated GPS outage
 BLACKOUT_START_FRAC = 0.4    # start blackout at 40% through the session
+

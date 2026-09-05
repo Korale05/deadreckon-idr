@@ -154,21 +154,26 @@ class NavigationEKF:
         I_KH = np.eye(4) - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
 
-    def update_ai_velocity(self, corrected_vel: np.ndarray):
+    def update_ai_velocity(self, corrected_vel: np.ndarray, r_std: float = None):
         """
         AI velocity correction update: the AI predicts the INS's velocity
-        error, we subtract it from the INS velocity to get a "corrected"
+        error, we add it to the INS velocity to get a "corrected"
         velocity, then feed that corrected velocity in as a measurement.
 
         Parameters
         ----------
         corrected_vel : np.ndarray
-            [vel_x, vel_y] — the INS velocity AFTER subtracting the AI's
+            [vel_x, vel_y] — the INS velocity AFTER adding the AI's
             predicted error.
+        r_std : float, optional
+            Override measurement noise standard deviation in m/s.
         """
         H = self.H_ai
         z = corrected_vel
-        R = self.R_ai
+        if r_std is not None and r_std > 0:
+            R = np.diag([r_std**2, r_std**2])
+        else:
+            R = self.R_ai
 
         # Innovation
         y = z - H @ self.x
@@ -185,6 +190,33 @@ class NavigationEKF:
         # Covariance update
         I_KH = np.eye(4) - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
+
+    def update_nhc(self, heading_rad: float = None, r_std: float = config.NHC_LATERAL_VEL_STD):
+        """
+        Non-Holonomic Constraint (NHC) update for land vehicles.
+        Enforces lateral (cross-track) velocity ~ 0 m/s relative to current heading.
+        """
+        if heading_rad is None:
+            speed = np.linalg.norm(self.velocity)
+            if speed < 0.1:
+                return
+            heading_rad = np.arctan2(self.x[3], self.x[2])
+
+        # Rotation matrix from ENU to Body frame
+        # v_lat = -sin(heading)*v_x + cos(heading)*v_y = 0
+        H = np.array([[0, 0, -np.sin(heading_rad), np.cos(heading_rad)]])
+        z = np.array([0.0])
+        R = np.array([[r_std**2]])
+
+        y = z - H @ self.x
+        S = H @ self.P @ H.T + R
+        try:
+            K = self.P @ H.T @ np.linalg.inv(S)
+            self.x = self.x + K @ y
+            I_KH = np.eye(4) - K @ H
+            self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
+        except np.linalg.LinAlgError:
+            pass
 
     @property
     def position(self) -> np.ndarray:
@@ -208,9 +240,11 @@ class NavigationEKF:
 
 
 def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
-                   gnss_pos=None, gnss_accuracy=None):
+                   gnss_pos=None, gnss_accuracy=None, gnss_sats=None,
+                   use_seamless_switching=True):
     """
-    Run the full EKF fusion over a session.
+    Run the full EKF fusion over a session with optional Seamless State Machine Switching
+    and Battery-Optimized AI Gating.
 
     Parameters
     ----------
@@ -218,26 +252,32 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
         Output of run_ins_mechanization(), with ins_vel_x/y, ins_pos_x/y, _t_sec.
     ai_corrections : np.ndarray, optional
         (N, 2) array of predicted velocity errors [err_vel_x, err_vel_y].
-        If None, no AI correction is applied (pure INS + GNSS).
     gnss_available : np.ndarray, optional
         Boolean array of length N. True where GPS is available.
-        If None, GPS is always available (when gnss_pos is provided).
     gnss_pos : np.ndarray, optional
         (N, 2) array of GPS positions [pos_x, pos_y] in ENU meters.
     gnss_accuracy : np.ndarray, optional
         (N,) array of GPS accuracy values in meters.
+    gnss_sats : np.ndarray, optional
+        (N,) array of GPS satellite count.
+    use_seamless_switching : bool
+        If True, enables 4-State Machine (GOOD, DEGRADED, LOST, RECOVERING) with
+        debouncing, adaptive R scaling, and battery AI gating.
 
     Returns
     -------
-    dict with keys: 'pos_x', 'pos_y', 'vel_x', 'vel_y', 'pos_unc', 'vel_unc'
-        Each is a numpy array of length N.
+    dict with keys: 'pos_x', 'pos_y', 'vel_x', 'vel_y', 'pos_unc', 'vel_unc',
+                    'mode_history', 'ai_active_mask', 'battery_summary'
     """
+    from src.seamless_controller import GNSSQualityStateMachine, check_innovation_gate, NavigationMode
+
     n = len(ins_df)
     t = ins_df["_t_sec"].to_numpy(dtype=float)
     ins_vel_x = ins_df["ins_vel_x"].to_numpy(dtype=float)
     ins_vel_y = ins_df["ins_vel_y"].to_numpy(dtype=float)
 
     ekf = NavigationEKF()
+    sm = GNSSQualityStateMachine() if use_seamless_switching else None
 
     # Initialize with first GNSS position if available
     if gnss_pos is not None and len(gnss_pos) > 0:
@@ -250,6 +290,8 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
     out_vel_y = np.zeros(n)
     out_pos_unc = np.zeros(n)
     out_vel_unc = np.zeros(n)
+    mode_history = []
+    ai_active_mask = np.zeros(n, dtype=bool)
 
     for i in range(n):
         dt = t[i] - t[i-1] if i > 0 else 0.1
@@ -259,25 +301,56 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
             ins_vel = np.array([ins_vel_x[i], ins_vel_y[i]])
             ekf.predict(dt, ins_vel=ins_vel)
 
-        # 2. UPDATE with AI velocity correction (if available)
-        # SIGN CONVENTION: err = true - ins → corrected = ins + err (ADDITION)
-        if ai_corrections is not None and i < len(ai_corrections):
+        # Basic GPS raw check
+        raw_gps_ok = True
+        if gnss_available is not None:
+            raw_gps_ok = gnss_available[i]
+        acc = gnss_accuracy[i] if (gnss_accuracy is not None and i < len(gnss_accuracy)) else None
+        sats = gnss_sats[i] if (gnss_sats is not None and i < len(gnss_sats)) else None
+
+        if use_seamless_switching and sm is not None:
+            state_info = sm.evaluate_sample(gps_ok=raw_gps_ok, accuracy_m=acc, sats_count=sats)
+            current_mode = state_info["mode"].value
+            trust_factor = state_info["trust_factor"]
+            ai_active = state_info["ai_active"]
+            skip_gnss = state_info["skip_gnss"]
+        else:
+            # Traditional baseline behavior
+            gps_ok_thresh = raw_gps_ok and (acc is None or acc < config.GNSS_BLACKOUT_THRESHOLD_M)
+            skip_gnss = not gps_ok_thresh
+            trust_factor = 1.0 if gps_ok_thresh else 0.0
+            ai_active = (ai_corrections is not None)
+            current_mode = "GOOD" if gps_ok_thresh else "LOST"
+
+        mode_history.append(current_mode)
+        ai_active_mask[i] = ai_active
+
+        # 2. UPDATE with AI velocity correction (if AI is active and corrections available)
+        if ai_active and ai_corrections is not None and i < len(ai_corrections):
             corrected_vel = np.array([
-                ins_vel_x[i] + ai_corrections[i, 0],  # ADD predicted error
+                ins_vel_x[i] + ai_corrections[i, 0],
                 ins_vel_y[i] + ai_corrections[i, 1],
             ])
             ekf.update_ai_velocity(corrected_vel)
 
-        # 3. UPDATE with GNSS (if available, not blacked out, and accuracy OK)
-        gps_ok = True
-        if gnss_available is not None:
-            gps_ok = gnss_available[i]
-        # Reject GPS fixes with accuracy worse than threshold
-        if gps_ok and gnss_accuracy is not None:
-            gps_ok = gps_ok and (gnss_accuracy[i] < config.GNSS_BLACKOUT_THRESHOLD_M)
-        if gps_ok and gnss_pos is not None and i < len(gnss_pos):
-            acc = gnss_accuracy[i] if gnss_accuracy is not None else None
-            ekf.update_gnss(gnss_pos[i], accuracy_m=acc)
+            # Apply Non-Holonomic Constraint (NHC) when in DEGRADED or LOST mode for land vehicle
+            if current_mode in [NavigationMode.DEGRADED.value, NavigationMode.LOST.value]:
+                ekf.update_nhc()
+
+        # 3. UPDATE with GNSS (if not skipped and measurement valid)
+        if not skip_gnss and gnss_pos is not None and i < len(gnss_pos):
+            # Scale R matrix by inverse trust factor
+            base_acc = acc if acc is not None and acc > 0 else config.EKF_R_GNSS_POS_STD
+            effective_acc = base_acc / max(0.05, trust_factor)
+
+            meas = gnss_pos[i]
+            innovation = meas - ekf.H_gnss @ ekf.x
+            R_temp = np.diag([effective_acc**2, effective_acc**2])
+            S_temp = ekf.H_gnss @ ekf.P @ ekf.H_gnss.T + R_temp
+
+            # Innovation gating to reject multipath anomalies
+            if check_innovation_gate(innovation, S_temp):
+                ekf.update_gnss(meas, accuracy_m=effective_acc)
 
         # Record output
         out_pos_x[i] = ekf.position[0]
@@ -287,6 +360,11 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
         out_pos_unc[i] = ekf.position_uncertainty
         out_vel_unc[i] = ekf.velocity_uncertainty
 
+    battery_summary = sm.get_battery_savings_summary() if sm is not None else {
+        "duty_cycle_pct": 100.0 if ai_corrections is not None else 0.0,
+        "battery_savings_pct": 0.0 if ai_corrections is not None else 100.0
+    }
+
     return {
         "pos_x": out_pos_x,
         "pos_y": out_pos_y,
@@ -294,7 +372,11 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
         "vel_y": out_vel_y,
         "pos_unc": out_pos_unc,
         "vel_unc": out_vel_unc,
+        "mode_history": mode_history,
+        "ai_active_mask": ai_active_mask,
+        "battery_summary": battery_summary,
     }
+
 
 
 if __name__ == "__main__":
