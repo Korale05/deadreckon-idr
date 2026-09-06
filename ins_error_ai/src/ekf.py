@@ -107,12 +107,12 @@ class NavigationEKF:
             [0, 0, 0,  1],
         ])
 
-        # If INS velocity is provided, inject it as our velocity estimate
-        if ins_vel is not None:
+        # Propagate state: pos = pos + vel * dt
+        # If velocity state is uninitialized (0,0), initialize with ins_vel
+        if ins_vel is not None and np.all(self.x[2:4] == 0.0):
             self.x[2] = ins_vel[0]
             self.x[3] = ins_vel[1]
 
-        # Propagate state
         self.x = F @ self.x
 
         # Propagate covariance: P = F P F^T + Q
@@ -293,6 +293,8 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
     mode_history = []
     ai_active_mask = np.zeros(n, dtype=bool)
 
+    consecutive_rejected_gnss = 0
+
     for i in range(n):
         dt = t[i] - t[i-1] if i > 0 else 0.1
 
@@ -351,6 +353,16 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
             # Innovation gating to reject multipath anomalies
             if check_innovation_gate(innovation, S_temp):
                 ekf.update_gnss(meas, accuracy_m=effective_acc)
+                consecutive_rejected_gnss = 0
+            else:
+                consecutive_rejected_gnss += 1
+                # If valid GNSS fix is rejected repeatedly (e.g. 5 times), filter has drifted; re-align position to GNSS fix
+                if consecutive_rejected_gnss >= 5:
+                    ekf.x[0] = meas[0]
+                    ekf.x[1] = meas[1]
+                    ekf.P[0, 0] = effective_acc**2
+                    ekf.P[1, 1] = effective_acc**2
+                    consecutive_rejected_gnss = 0
 
         # Record output
         out_pos_x[i] = ekf.position[0]

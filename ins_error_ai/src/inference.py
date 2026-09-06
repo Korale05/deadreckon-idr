@@ -61,8 +61,8 @@ class LiveErrorCorrector:
 
         Parameters
         ----------
-        ins_state : np.ndarray, shape (4,)
-            [ins_vel_x, ins_vel_y, ins_pos_x, ins_pos_y]
+        ins_state : np.ndarray, shape (2,)
+            [ins_vel_x, ins_vel_y]
 
         Returns
         -------
@@ -70,7 +70,7 @@ class LiveErrorCorrector:
             [err_vel_x, err_vel_y] — the predicted velocity error.
 
             To get corrected velocity:
-                corrected_vel = ins_state[:2] + predicted_err   (ADDITION)
+                corrected_vel = ins_state + predicted_err   (ADDITION)
         """
         if not self.ready():
             raise RuntimeError(
@@ -80,7 +80,7 @@ class LiveErrorCorrector:
 
         X_imu = np.stack(list(self.buffer))[None, ...].astype(np.float32)   # (1, W, 6)
         X_state = np.nan_to_num(ins_state, nan=0.0, posinf=0.0, neginf=0.0)
-        X_state = X_state[None, ...].astype(np.float32)                      # (1, 4)
+        X_state = X_state[None, ...].astype(np.float32)                      # (1, 2)
 
         # Normalize using training statistics
         X_imu_n = (X_imu - self.stats["imu_mean"]) / self.stats["imu_std"]
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     for _ in range(config.WINDOW_SIZE):
         corrector.push_sample(np.random.randn(6) * 0.1)
 
-    dummy_ins_state = np.array([5.0, 0.2, 120.0, 34.0])  # vel_x, vel_y, pos_x, pos_y
+    dummy_ins_state = np.array([5.0, 0.2])  # vel_x, vel_y
 
     # Warm-up call (first call is slow due to TF graph tracing)
     _ = corrector.correct(dummy_ins_state)

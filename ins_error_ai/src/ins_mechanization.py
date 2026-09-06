@@ -191,6 +191,27 @@ def run_ins_mechanization(imu_df: pd.DataFrame, ref_df: pd.DataFrame = None,
                 current_interval = rng.uniform(10.0, 120.0)
 
         vel[i] = vel[i-1] + 0.5 * (nav_acc[i] + nav_acc[i-1]) * dt
+
+        # --- Zero-Velocity Update (ZUPT) & Physical Motion Constraints ---
+        # Detect stationary state: low angular velocity (<0.08 rad/s) and gravity-only accel (|acc| ~ 9.81 m/s²)
+        if "gyro_yaw" in imu_df.columns:
+            gyro_mag = np.sqrt(
+                imu_df["gyro_yaw"].iloc[i]**2 +
+                imu_df["gyro_pitch"].iloc[i]**2 +
+                imu_df["gyro_roll"].iloc[i]**2
+            )
+            acc_mag = np.sqrt(
+                acc[i, 0]**2 + acc[i, 1]**2 + acc[i, 2]**2
+            )
+            if gyro_mag < 0.08 and abs(acc_mag - config.GRAVITY) < 0.35:
+                vel[i, 0] *= 0.85
+                vel[i, 1] *= 0.85
+                vel[i, 2] *= 0.85
+
+        # Physical speed limit bounding for land vehicles (+-45 m/s = 162 km/h max)
+        vel[i, 0] = np.clip(vel[i, 0], -45.0, 45.0)
+        vel[i, 1] = np.clip(vel[i, 1], -45.0, 45.0)
+
         pos[i] = pos[i-1] + 0.5 * (vel[i] + vel[i-1]) * dt
 
     # --- Build output DataFrame ---

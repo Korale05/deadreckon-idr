@@ -111,8 +111,8 @@ STRIDE = 5                    # slide by 0.5s (5 samples at 10 Hz)
 # IMU channels fed into the network per timestep (6 channels)
 IMU_FEATURES = ["acc_x", "acc_y", "acc_z", "gyro_yaw", "gyro_pitch", "gyro_roll"]
 
-# INS auxiliary state fed in alongside the IMU window
-INS_STATE_FEATURES = ["ins_vel_x", "ins_vel_y", "ins_pos_x", "ins_pos_y"]
+# INS auxiliary state fed in alongside the IMU window (velocity features only, avoiding non-stationary position features)
+INS_STATE_FEATURES = ["ins_vel_x", "ins_vel_y"]
 
 # What the network predicts: the INS's error in velocity (m/s)
 TARGET_FEATURES = ["err_vel_x", "err_vel_y"]

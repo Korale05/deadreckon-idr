@@ -193,10 +193,10 @@ def evaluate_session(session, corrector):
         "true_pos_y": true_pos_y,
     })
 
-    # INS mechanization with re-anchoring
+    # INS mechanization without ground-truth re-anchoring
     import hashlib
     session_seed = int(hashlib.md5(session["name"].encode()).hexdigest(), 16) % 1000000
-    ins_df = run_ins_mechanization(raw_imu, ref_df=ref_df, gnss_available=gps_available, seed=session_seed)
+    ins_df = run_ins_mechanization(raw_imu, ref_df=None, seed=session_seed)
     
     t = ins_df["_t_sec"].to_numpy(dtype=float)
     duration = t[-1]

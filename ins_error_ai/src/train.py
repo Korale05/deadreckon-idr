@@ -78,7 +78,7 @@ class RealUnitMAECallback(tf.keras.callbacks.Callback):
             train_mae_n = logs.get("mae", 0)
             val_mae_n = logs.get("val_mae", None)
             real_train_mae = train_mae_n * np.mean(np.abs(self.y_std))
-            msg = f"  → Real-unit MAE: train={real_train_mae:.3f} m/s"
+            msg = f"  -> Real-unit MAE: train={real_train_mae:.3f} m/s"
             if val_mae_n is not None:
                 real_val_mae = val_mae_n * np.mean(np.abs(self.y_std))
                 msg += f", val={real_val_mae:.3f} m/s"

@@ -325,7 +325,7 @@ def run_pipeline(session_name=None, blackout_start=None, blackout_duration=None,
 
     # --- Step 2: Run INS mechanization ---
     print("[2/9] Running INS mechanization...")
-    ins_df = run_ins_mechanization(raw_imu, ref_df=ref_df, gnss_available=data["gps_available"], seed=session_seed)
+    ins_df = run_ins_mechanization(raw_imu, ref_df=None, seed=session_seed)
     duration = ins_df["_t_sec"].iloc[-1]
     ins_final_drift = np.sqrt(
         ins_df["ins_pos_x"].iloc[-1]**2 + ins_df["ins_pos_y"].iloc[-1]**2)
@@ -365,7 +365,7 @@ def run_pipeline(session_name=None, blackout_start=None, blackout_duration=None,
     print(f"  Simulated blackout skipped {skipped_updates} GNSS updates during the blackout window.")
 
     # Re-run INS and AI for EKF blackout run (respects blackout mask)
-    ins_df_blackout = run_ins_mechanization(raw_imu, ref_df=ref_df, gnss_available=blackout_gps, seed=session_seed)
+    ins_df_blackout = run_ins_mechanization(raw_imu, ref_df=None, seed=session_seed)
     ai_corrections_blackout = run_ai_correction_batch(ins_df_blackout, corrector)
 
     ekf_blackout = run_ekf_fusion(

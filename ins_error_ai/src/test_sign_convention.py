@@ -61,7 +61,7 @@ def test_sign_convention():
     print(f"    Max difference Y: {max_diff_y:.2e}")
 
     label_ok = max_diff_x < 1e-6 and max_diff_y < 1e-6
-    print(f"    Result: {'PASS ✓' if label_ok else 'FAIL ✗'}")
+    print(f"    Result: {'PASS [OK]' if label_ok else 'FAIL [X]'}")
 
     # --- Test 2: Verify that corrected = ins + err recovers true ---
     corrected_x = df["ins_vel_x"] + df["err_vel_x"]
@@ -75,7 +75,7 @@ def test_sign_convention():
     print(f"    Max recovery error Y: {recovery_err_y:.2e}")
 
     recovery_ok = recovery_err_x < 1e-6 and recovery_err_y < 1e-6
-    print(f"    Result: {'PASS ✓' if recovery_ok else 'FAIL ✗'}")
+    print(f"    Result: {'PASS [OK]' if recovery_ok else 'FAIL [X]'}")
 
     # --- Test 3: Inspect EKF code for correct sign ---
     ekf_path = os.path.join(os.path.dirname(__file__), "ekf.py")
@@ -91,7 +91,7 @@ def test_sign_convention():
     print(f"    Uses subtraction (wrong):   {has_subtraction}")
 
     ekf_ok = has_addition and not has_subtraction
-    print(f"    Result: {'PASS ✓' if ekf_ok else 'FAIL ✗'}")
+    print(f"    Result: {'PASS [OK]' if ekf_ok else 'FAIL [X]'}")
 
     # --- Test 4: Check config.py documents the convention ---
     config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.py")
@@ -100,12 +100,12 @@ def test_sign_convention():
 
     has_convention_doc = "corrected_vel = ins_vel + predicted_err" in config_code
     print(f"\n[4] Config.py documents sign convention: {has_convention_doc}")
-    print(f"    Result: {'PASS ✓' if has_convention_doc else 'FAIL ✗'}")
+    print(f"    Result: {'PASS [OK]' if has_convention_doc else 'FAIL [X]'}")
 
     # --- Overall ---
     all_pass = label_ok and recovery_ok and ekf_ok and has_convention_doc
     print(f"\n{'='*60}")
-    print(f"OVERALL: {'ALL TESTS PASSED ✓' if all_pass else 'SOME TESTS FAILED ✗'}")
+    print(f"OVERALL: {'ALL TESTS PASSED [OK]' if all_pass else 'SOME TESTS FAILED [X]'}")
     print(f"{'='*60}")
     return all_pass
 
