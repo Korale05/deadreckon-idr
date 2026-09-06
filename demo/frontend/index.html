@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeadReckon — AI-Powered Inertial Navigation Demo</title>
+    <meta name="description" content="End-to-end demonstration of INS/AI/EKF sensor fusion for smartphone-based dead reckoning navigation">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+    <!-- ============ HEADER ============ -->
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 32 32" fill="none">
+                    <circle cx="16" cy="16" r="14" stroke="url(#grad)" stroke-width="2.5"/>
+                    <path d="M16 6 L16 16 L24 20" stroke="url(#grad)" stroke-width="2" stroke-linecap="round"/>
+                    <circle cx="16" cy="16" r="3" fill="url(#grad)"/>
+                    <defs>
+                        <linearGradient id="grad" x1="0" y1="0" x2="32" y2="32">
+                            <stop offset="0%" stop-color="#58a6ff"/>
+                            <stop offset="100%" stop-color="#3fb950"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+                <h1>DeadReckon</h1>
+            </div>
+            <span class="header-tagline">AI-Powered Inertial Dead Reckoning</span>
+        </div>
+        <div class="header-right">
+            <div class="status-indicator" id="statusIndicator">
+                <span class="status-dot"></span>
+                <span class="status-text">Connecting...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ============ MAIN CONTENT ============ -->
+    <main class="main-grid">
+
+        <!-- ---------- CONTROL PANEL ---------- -->
+        <section class="panel control-panel" id="controlPanel">
+            <div class="panel-header">
+                <h2>
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="panel-icon"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 11H9v-2h2v2zm0-4H9V5h2v4z"/></svg>
+                    Session Control
+                </h2>
+            </div>
+            <div class="panel-body">
+                <div class="form-group">
+                    <label for="sessionSelect">Select Session</label>
+                    <select id="sessionSelect" class="select-input">
+                        <option value="">Loading sessions...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="blackoutSlider">
+                        GNSS Blackout Duration: <span id="blackoutValue" class="accent-text">60s</span>
+                    </label>
+                    <input type="range" id="blackoutSlider" class="range-slider" min="0" max="600" value="60" step="10">
+                    <div class="range-labels">
+                        <span>0s</span>
+                        <span>300s</span>
+                        <span>600s</span>
+                    </div>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" id="btnRunPipeline" disabled>
+                        <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>
+                        Run Pipeline
+                    </button>
+                    <button class="btn btn-secondary" id="btnLiveDemo" disabled>
+                        <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"/></svg>
+                        Live Simulation
+                    </button>
+                </div>
+                <div class="progress-bar-container" id="progressContainer" style="display:none;">
+                    <div class="progress-bar" id="progressBar"></div>
+                    <span class="progress-text" id="progressText">Processing...</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---------- METRICS DASHBOARD ---------- -->
+        <section class="panel metrics-panel" id="metricsPanel">
+            <div class="panel-header">
+                <h2>
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="panel-icon"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zm6-4a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zm6-3a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+                    Performance Metrics
+                </h2>
+            </div>
+            <div class="panel-body">
+                <div class="metrics-grid" id="metricsGrid">
+                    <div class="metric-card" id="metricDuration">
+                        <div class="metric-label">Session Duration</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">Waiting for data</div>
+                    </div>
+                    <div class="metric-card ins" id="metricInsDrift">
+                        <div class="metric-label">Raw INS Drift</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">Pure dead reckoning</div>
+                    </div>
+                    <div class="metric-card ai" id="metricAiDrift">
+                        <div class="metric-label">AI-Corrected Drift</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">AI error correction only</div>
+                    </div>
+                    <div class="metric-card ekf" id="metricEkfDrift">
+                        <div class="metric-label">EKF Full Drift</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">INS + AI + GNSS fusion</div>
+                    </div>
+                    <div class="metric-card blackout" id="metricBoDrift">
+                        <div class="metric-label">EKF Blackout Drift</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">During GNSS outage</div>
+                    </div>
+                    <div class="metric-card" id="metricPosRmse">
+                        <div class="metric-label">Position RMSE</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">INS vs EKF</div>
+                    </div>
+                    <div class="metric-card" id="metricVelRmse">
+                        <div class="metric-label">Velocity RMSE</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">INS vs EKF</div>
+                    </div>
+                    <div class="metric-card" id="metricFinalErr">
+                        <div class="metric-label">Final Position Error</div>
+                        <div class="metric-value" data-target="0">—</div>
+                        <div class="metric-sub">EKF end-of-session</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---------- TRAJECTORY MAP ---------- -->
+        <section class="panel trajectory-panel" id="trajectoryPanel">
+            <div class="panel-header">
+                <h2>
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="panel-icon"><path fill-rule="evenodd" d="M12 1.586l-4 4v12.828l4-4V1.586zM3.707 3.293A1 1 0 002 4v10a1 1 0 00.293.707L6 18.414V5.586L3.707 3.293zM14 5.586v12.828l2.293-2.293A1 1 0 0017 16V6a1 1 0 00-.293-.707L14 2.586v3z" clip-rule="evenodd"/></svg>
+                    Trajectory Visualization
+                </h2>
+                <div class="trajectory-legend" id="trajectoryLegend">
+                    <label class="legend-item"><input type="checkbox" checked data-layer="gt"> <span class="legend-color" style="background:#ffffff"></span> Ground Truth</label>
+                    <label class="legend-item"><input type="checkbox" checked data-layer="ins"> <span class="legend-color" style="background:#ff4757"></span> Raw INS</label>
+                    <label class="legend-item"><input type="checkbox" checked data-layer="ai"> <span class="legend-color" style="background:#3b82f6"></span> AI Corrected</label>
+                    <label class="legend-item"><input type="checkbox" checked data-layer="ekf"> <span class="legend-color" style="background:#3fb950"></span> EKF Fused</label>
+                    <label class="legend-item"><input type="checkbox" checked data-layer="bo"> <span class="legend-color" style="background:#f59e0b"></span> EKF Blackout</label>
+                </div>
+            </div>
+            <div class="panel-body trajectory-body">
+                <div class="canvas-container" id="canvasContainer">
+                    <canvas id="trajectoryCanvas"></canvas>
+                    <div class="canvas-overlay" id="canvasOverlay">
+                        <p>Select a session and click <strong>Run Pipeline</strong> to visualize</p>
+                    </div>
+                </div>
+                <div class="canvas-controls">
+                    <button class="btn-icon-only" id="btnZoomIn" title="Zoom In">
+                        <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd"/></svg>
+                    </button>
+                    <button class="btn-icon-only" id="btnZoomOut" title="Zoom Out">
+                        <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 10a1 1 0 011-1h8a1 1 0 110 2H6a1 1 0 01-1-1z" clip-rule="evenodd"/></svg>
+                    </button>
+                    <button class="btn-icon-only" id="btnResetView" title="Reset View">
+                        <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---------- ARCHITECTURE DIAGRAM ---------- -->
+        <section class="panel arch-panel" id="archPanel">
+            <div class="panel-header">
+                <h2>
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="panel-icon"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zm-2 4a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z"/></svg>
+                    System Architecture
+                </h2>
+            </div>
+            <div class="panel-body arch-body">
+                <div class="arch-diagram">
+                    <!-- IMU Sensor -->
+                    <div class="arch-node imu-node" id="archImu">
+                        <div class="arch-node-icon">📱</div>
+                        <div class="arch-node-label">IMU Sensor</div>
+                        <div class="arch-node-detail">Accel + Gyro @ 10Hz</div>
+                    </div>
+                    <div class="arch-arrow" id="arrow1"><div class="arch-arrow-line"></div><div class="arch-arrow-dot"></div></div>
+
+                    <!-- INS Mechanization -->
+                    <div class="arch-node ins-node" id="archIns">
+                        <div class="arch-node-icon">⚙️</div>
+                        <div class="arch-node-label">INS Engine</div>
+                        <div class="arch-node-detail">Strapdown Mechanization</div>
+                    </div>
+                    <div class="arch-arrow" id="arrow2"><div class="arch-arrow-line"></div><div class="arch-arrow-dot"></div></div>
+
+                    <!-- AI Model -->
+                    <div class="arch-node ai-node" id="archAi">
+                        <div class="arch-node-icon">🧠</div>
+                        <div class="arch-node-label">AI Model</div>
+                        <div class="arch-node-detail">CNN-LSTM Error Predictor</div>
+                    </div>
+                    <div class="arch-arrow" id="arrow3"><div class="arch-arrow-line"></div><div class="arch-arrow-dot"></div></div>
+
+                    <!-- EKF -->
+                    <div class="arch-node ekf-node" id="archEkf">
+                        <div class="arch-node-icon">🔀</div>
+                        <div class="arch-node-label">EKF Fusion</div>
+                        <div class="arch-node-detail">4-State Kalman Filter</div>
+                    </div>
+                    <div class="arch-arrow" id="arrow4"><div class="arch-arrow-line"></div><div class="arch-arrow-dot"></div></div>
+
+                    <!-- Output -->
+                    <div class="arch-node output-node" id="archOutput">
+                        <div class="arch-node-icon">📍</div>
+                        <div class="arch-node-label">Final Position</div>
+                        <div class="arch-node-detail">Sub-meter Accuracy</div>
+                    </div>
+
+                    <!-- GNSS (above EKF) -->
+                    <div class="arch-gnss-branch">
+                        <div class="arch-node gnss-node" id="archGnss">
+                            <div class="arch-node-icon">🛰️</div>
+                            <div class="arch-node-label">GNSS</div>
+                            <div class="arch-node-detail">Smartphone GPS</div>
+                        </div>
+                        <div class="arch-arrow-down" id="arrowGnss"><div class="arch-arrow-line-vert"></div><div class="arch-arrow-dot"></div></div>
+                    </div>
+                </div>
+                <div class="arch-mode-indicator" id="archModeIndicator">
+                    <span class="mode-badge good">GOOD</span>
+                    <span class="mode-badge degraded">DEGRADED</span>
+                    <span class="mode-badge lost">LOST</span>
+                    <span class="mode-badge recovering">RECOVERING</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ---------- SYSTEM INFO ---------- -->
+        <section class="panel sysinfo-panel" id="sysinfoPanel">
+            <div class="panel-header">
+                <h2>
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="panel-icon"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
+                    System Information
+                </h2>
+            </div>
+            <div class="panel-body">
+                <div class="sysinfo-content" id="sysinfoContent">
+                    <p class="sysinfo-loading">Loading system info...</p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ============ FOOTER ============ -->
+    <footer class="footer">
+        <p>DeadReckon — AI-Powered Inertial Dead Reckoning Navigation System</p>
+        <p class="footer-sub">INS Mechanization • CNN-LSTM Error Correction • Extended Kalman Filter • GNSS Fusion</p>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
