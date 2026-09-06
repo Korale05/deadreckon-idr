@@ -1,1 +1,27 @@
-venv
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Large datasets & raw data (hosted on Hugging Face)
+Data/
+ins_error_ai/data/processed/*.csv
+ins_error_ai/data/processed/*.npz
+ins_error_ai/cache/
+
+# Large model artifacts (hosted on Hugging Face)
+ins_error_ai/outputs/models/*.keras
+ins_error_ai/outputs/models/*.tflite
+ins_error_ai/outputs/models/*.npz
+
+# IDE & System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
