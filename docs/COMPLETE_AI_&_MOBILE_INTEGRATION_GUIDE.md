@@ -402,7 +402,7 @@ Invoke-Item outputs/plots/S1_uncertainty.png
 
 ---
 
-## Key Metrics Summary Table for Pitch Deck
+## Key Metrics Summary Table 
 
 | Performance Metric | Physical Significance | DeadReckon Benchmark Result |
 | :--- | :--- | :---: |
