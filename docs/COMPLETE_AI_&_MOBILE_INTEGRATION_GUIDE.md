@@ -197,11 +197,45 @@ Here are the most challenging, critical questions judges will ask, along with bu
 > 1. **`GOOD` Mode (GPS Accuracy $\le 10\text{m}$)**: The neural network is put to **SLEEP (0% CPU/NPU load)**. Navigation relies directly on GNSS + EKF. This saves **$> 72\%$ battery power** during clear sky driving.
 > 2. **`DEGRADED` Mode (GPS Accuracy $10\text{m} - 25\text{m}$)**: The AI model wakes up and begins supplying velocity error corrections.
 > 3. **`LOST` Mode (GPS Accuracy $> 50\text{m}$ / Outage)**: The system runs on INS + AI Velocity Corrections + Non-Holonomic Vehicle Constraints (NHC).
-> 4. **`RECOVERING` Mode**: A 20-cycle (2.0-second) debouncing filter prevents rapid state chattering when signals flicker."
+> 4. **`RECOVERING` Mode (Re-acquired GNSS after outage)**: A 20-cycle (2.0-second) debouncing & smooth variance blending mechanism. Smoothly deflates measurement noise matrix $R_{\text{GNSS}}$ to pull estimated trajectory back to satellite precision without trajectory jumps or filter lockout.
 
 ---
 
-### Question 6: "Does DeadReckon require an Internet connection?"
+### Question 6: "How does the RECOVERING mode work in detail when GNSS returns after a tunnel blackout?"
+
+**Judge's Perspective**: *When exiting a tunnel, GNSS signals return suddenly. How do you prevent trajectory jumps on the user's screen or avoid rejecting valid GPS fixes?*
+
+#### Bulletproof Technical Breakdown:
+> "When exiting a tunnel blackout, GNSS satellite signals are suddenly re-acquired. However, initial satellite fixes often contain high multipath reflection noise, and the filter position may have accumulated several meters of relative drift during the blackout.
+>
+> DeadReckon's **`RECOVERING` engine** ([`seamless_controller.py`](file:///d:/Project/DeadReckon/ins_error_ai/src/seamless_controller.py) & [`ekf.py`](file:///d:/Project/DeadReckon/ins_error_ai/src/ekf.py)) handles this transition through **5 synchronized pillars**:
+>
+> 1. **Debounce Hysteresis Counter ($N_{\text{recovery}} = 20$ cycles = 2.0 seconds)**:
+>    - When a valid GNSS fix is detected ($\text{accuracy} \le 10\text{m}$, score $\ge 0.7$), the system does **not** instantly switch directly to `GOOD`.
+>    - It enters `RECOVERING` mode and increments a `recovery_counter`. It requires **20 consecutive stable cycles (2.0 seconds at 10 Hz)** of valid satellite signals to confirm recovery.
+>    - If GNSS flickers or drops again during these 2 seconds, the counter resets to 0, preventing rapid state 'chattering'.
+>
+> 2. **Dynamic Trust Factor ($\tau$) & Measurement Noise ($R$) Deflation**:
+>    - During the 20 recovery cycles, trust factor $\tau$ scales linearly from $0.2 \to 1.0$:
+>      $$\text{blend\_frac} = \min\left(1.0, \frac{\text{recovery\_counter}}{20}\right), \quad \tau = 0.2 + 0.8 \times \text{blend\_frac}$$
+>    - Effective GPS measurement noise covariance $R_{\text{GNSS}}$ is dynamically scaled by $\frac{1}{\tau}$:
+>      $$\sigma_{\text{eff}} = \frac{\max(\text{accuracy\_m}, \sigma_{\text{base}})}{\max(0.05, \tau)}, \quad R_{\text{GNSS}} = \begin{bmatrix} \sigma_{\text{eff}}^2 & 0 \\ 0 & \sigma_{\text{eff}}^2 \end{bmatrix}$$
+>    - At cycle 1 ($\tau = 0.2$), $R_{\text{GNSS}}$ is 25x higher than normal, making Kalman gain $K$ small to prevent sudden screen jumps. As $\text{counter} \to 20$ ($\tau \to 1.0$), $R_{\text{GNSS}}$ smoothly deflates to normal precision, gracefully pulling the icon onto the true road path.
+>
+> 3. **Dual AI + GNSS Blending (AI stays ACTIVE)**:
+>    - Unlike `GOOD` mode (where AI sleeps), in `RECOVERING` mode **AI remains ACTIVE** (`ai_active = True`).
+>    - The EKF simultaneously processes 10 Hz AI velocity error corrections AND incoming 1 Hz GNSS position fixes, guaranteeing smooth 10 Hz vehicle velocity dynamics during satellite re-acquisition.
+>
+> 4. **Mahalanobis Innovation Gating ($d_M^2 \le 9.21$)**:
+>    - Accepts GNSS updates only if squared Mahalanobis distance passes the 99% Chi-Square threshold ($d_M^2 \le 9.21$), rejecting initial multipath reflection spikes upon tunnel exit.
+>
+> 5. **Automatic 5-Cycle Innovation Lockout Recovery**:
+>    - If the blackout was prolonged and EKF position error grew large, standard innovation gating could lock out valid GPS fixes indefinitely.
+>    - DeadReckon tracks consecutive rejected updates. If valid GNSS signals are rejected 5 times consecutively, the filter detects an innovation lockout, forces position re-alignment ($\mathbf{x}[0:2] = \mathbf{z}_{\text{GNSS}}$), and resets covariance $P$, recovering within **0.50 seconds**."
+
+---
+
+### Question 7: "Does DeadReckon require an Internet connection?"
 
 #### Bulletproof Answer:
 > "No. The core engine—including INS mechanization, TFLite neural network inference, Extended Kalman Filtering, and the state machine controller—is **100% OFFLINE**.
