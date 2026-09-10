@@ -55,15 +55,17 @@ def run_ai_correction_batch(ins_df, corrector):
     """
     Run the AI error corrector over an entire session in batch mode.
     This is extremely fast compared to step-by-step streaming.
+    Returns (corrections, stds) if model outputs uncertainty, or (corrections, stds_default).
     """
     if corrector is None:
-        return None
+        return None, None
 
     n = len(ins_df)
     corrections = np.zeros((n, 2))
+    stds = np.full((n, 2), config.EKF_R_AI_VEL_STD)
     W = config.WINDOW_SIZE
     if n < W:
-        return corrections
+        return corrections, stds
 
     imu_keys = config.IMU_FEATURES
     state_keys = config.INS_STATE_FEATURES
@@ -96,12 +98,25 @@ def run_ai_correction_batch(ins_df, corrector):
 
     # Predict in a single batch
     pred_n = corrector.model.predict([X_imu_n, X_state_n], batch_size=512, verbose=0)
-    pred = pred_n * corrector.stats["y_std"] + corrector.stats["y_mean"]
-    pred = np.nan_to_num(pred, nan=0.0)
 
-    # Fill back predictions
-    corrections[W - 1:] = pred
-    return corrections
+    if pred_n.shape[1] >= 4:
+        mean_n = pred_n[:, :2]
+        log_var_n = pred_n[:, 2:]
+        log_var_clamped = np.clip(log_var_n, getattr(config, "LOG_VAR_MIN", -7.0), getattr(config, "LOG_VAR_MAX", 7.0))
+        pred_err = mean_n * corrector.stats["y_std"] + corrector.stats["y_mean"]
+        pred_std = np.sqrt(np.exp(log_var_clamped)) * corrector.stats["y_std"]
+
+        pred_err = np.nan_to_num(pred_err, nan=0.0)
+        pred_std = np.nan_to_num(pred_std, nan=config.EKF_R_AI_VEL_STD)
+
+        corrections[W - 1:] = pred_err
+        stds[W - 1:] = pred_std
+        return corrections, stds
+    else:
+        pred_err = pred_n[:, :2] * corrector.stats["y_std"] + corrector.stats["y_mean"]
+        pred_err = np.nan_to_num(pred_err, nan=0.0)
+        corrections[W - 1:] = pred_err
+        return corrections, stds
 
 
 def compute_ai_corrected_trajectory(ins_df, ai_corrections):
@@ -334,10 +349,13 @@ def run_pipeline(session_name=None, blackout_start=None, blackout_duration=None,
     # --- Step 4: Run AI correction (batch mode) ---
     print("[4/9] Running AI error correction (batch)...")
     corrector = load_ai_corrector()
-    ai_corrections = run_ai_correction_batch(ins_df, corrector)
+    ai_corrections, ai_stds = run_ai_correction_batch(ins_df, corrector)
     if ai_corrections is not None:
         mean_correction = np.mean(np.abs(ai_corrections), axis=0)
         print(f"  Mean correction magnitude: [{mean_correction[0]:.3f}, {mean_correction[1]:.3f}] m/s")
+        if ai_stds is not None:
+            mean_std = np.mean(ai_stds, axis=0)
+            print(f"  Mean predicted uncertainty: [{mean_std[0]:.3f}, {mean_std[1]:.3f}] m/s")
     else:
         print("  AI model not available — skipping correction")
 
@@ -348,7 +366,7 @@ def run_pipeline(session_name=None, blackout_start=None, blackout_duration=None,
     # --- Step 6: Run EKF fusion (with GNSS) ---
     print("[6/9] Running EKF fusion (with GNSS)...")
     ekf_result = run_ekf_fusion(
-        ins_df, ai_corrections=ai_corrections,
+        ins_df, ai_corrections=ai_corrections, ai_stds=ai_stds,
         gnss_available=data["gps_available"],
         gnss_pos=data["gps_pos"],
         gnss_accuracy=data["gps_accuracy"],
@@ -366,10 +384,10 @@ def run_pipeline(session_name=None, blackout_start=None, blackout_duration=None,
 
     # Re-run INS and AI for EKF blackout run (respects blackout mask)
     ins_df_blackout = run_ins_mechanization(raw_imu, ref_df=None, seed=session_seed)
-    ai_corrections_blackout = run_ai_correction_batch(ins_df_blackout, corrector)
+    ai_corrections_blackout, ai_stds_blackout = run_ai_correction_batch(ins_df_blackout, corrector)
 
     ekf_blackout = run_ekf_fusion(
-        ins_df_blackout, ai_corrections=ai_corrections_blackout,
+        ins_df_blackout, ai_corrections=ai_corrections_blackout, ai_stds=ai_stds_blackout,
         gnss_available=blackout_gps,
         gnss_pos=data["gps_pos"],
         gnss_accuracy=data["gps_accuracy"],

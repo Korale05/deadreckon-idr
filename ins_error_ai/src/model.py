@@ -35,7 +35,10 @@ def build_error_correction_model(
     n_state_features: int = len(config.INS_STATE_FEATURES),
     n_targets: int = len(config.TARGET_FEATURES),
     unroll_lstms: bool = False,
+    enable_uncertainty: bool = None,
 ) -> tf.keras.Model:
+    if enable_uncertainty is None:
+        enable_uncertainty = config.ENABLE_UNCERTAINTY_HEAD
 
     # --- Branch 1: raw IMU window -> Conv1D -> LSTM ---
     imu_input = layers.Input(shape=(window_size, n_imu_features), name="imu_window")
@@ -60,14 +63,57 @@ def build_error_correction_model(
     m = layers.Dropout(0.2)(m)
     m = layers.Dense(32, activation="relu")(m)
 
-    # --- Output: predicted velocity error (m/s), one value per target axis ---
-    output = layers.Dense(n_targets, activation="linear", name="predicted_error")(m)
+    # --- Output head ---
+    if enable_uncertainty:
+        # Output 4 values: [pred_err_x, pred_err_y, log_var_x, log_var_y]
+        output = layers.Dense(n_targets * 2, activation="linear", name="predicted_error_and_variance")(m)
+    else:
+        # Output 2 values: [pred_err_x, pred_err_y]
+        output = layers.Dense(n_targets, activation="linear", name="predicted_error")(m)
 
     model = models.Model(inputs=[imu_input, state_input], outputs=output,
                           name="ins_error_correction_model")
     return model
 
 
+@tf.keras.utils.register_keras_serializable(package="Custom", name="gaussian_nll_loss")
+def gaussian_nll_loss(y_true, y_pred):
+    """
+    Heteroscedastic Gaussian Negative Log-Likelihood Loss.
+    y_true: shape (batch_size, 2)  -- true velocity error (normalized)
+    y_pred: shape (batch_size, 4)  -- [pred_mean_x, pred_mean_y, pred_log_var_x, pred_log_var_y]
+    """
+    mean = y_pred[:, :2]
+    log_var = y_pred[:, 2:]
+
+    # CRITICAL: Clamp log-variance to [-7.0, 7.0] to prevent numerical explosion & NaN loss
+    log_var_clamped = tf.clip_by_value(log_var, config.LOG_VAR_MIN, config.LOG_VAR_MAX)
+    inv_var = tf.exp(-log_var_clamped)
+
+    sq_err = tf.square(y_true - mean)
+    # Gaussian NLL formula: 0.5 * (exp(-s) * (y - mu)^2 + s)
+    loss = 0.5 * (inv_var * sq_err + log_var_clamped)
+    return tf.reduce_mean(loss)
+
+
+@tf.keras.utils.register_keras_serializable(package="Custom", name="mean_error_mae")
+def mean_error_mae(y_true, y_pred):
+    """MAE metric on predicted mean velocity error."""
+    return tf.reduce_mean(tf.abs(y_true - y_pred[:, :2]))
+
+
+@tf.keras.utils.register_keras_serializable(package="Custom", name="combined_huber_nll_loss")
+def combined_huber_nll_loss(y_true, y_pred):
+    """
+    Dual-weighted loss combining Huber Loss for mean velocity precision
+    and Heteroscedastic NLL Loss for predicted uncertainty calibration.
+    """
+    huber = tf.keras.losses.Huber(delta=1.0)(y_true, y_pred[:, :2])
+    nll = gaussian_nll_loss(y_true, y_pred)
+    return huber + 0.2 * nll
+
+
 if __name__ == "__main__":
     m = build_error_correction_model()
     m.summary()
+

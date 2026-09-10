@@ -140,20 +140,38 @@ VAL_SPLIT = 0.15
 TEST_SPLIT = 0.15
 RANDOM_SEED = 42
 
+# Explicit holdout test sessions (held out strictly from training split)
+EXPLICIT_TEST_SESSIONS = ["S1"]
+
+# Data Augmentation parameters
+AUGMENT_IMU = True
+AUGMENT_RATIO = 0.5            # 50% of training windows receive random IMU augmentation
+AUG_NOISE_ACC_STD = 0.005      # m/s^2 Gaussian noise std on acceleration channels (calibrated for precision)
+AUG_NOISE_GYRO_STD = 0.002     # rad/s Gaussian noise std on gyro channels
+AUG_BIAS_ACC_MAX = 0.01        # m/s^2 max uniform bias offset on acceleration
+AUG_BIAS_GYRO_MAX = 0.001      # rad/s max uniform bias offset on gyro
+
+# Neural Network Output Architecture:
+# False = 2 outputs (mean velocity error vector)
+# True = 4 outputs (mean velocity error vector + log-variance vector for uncertainty)
+ENABLE_UNCERTAINTY_HEAD = True
+LOG_VAR_MIN = -7.0             # Clamp log-variance to prevent numerical explosion
+LOG_VAR_MAX = 7.0
+
 # ---------------------------------------------------------------------------
 # 5. EKF TUNING PARAMETERS
 # ---------------------------------------------------------------------------
 # State vector: [pos_x, pos_y, vel_x, vel_y]  (local ENU meters & m/s)
 
-# Process noise standard deviations per timestep
+# Process noise standard deviations per timestep (tuned via tune_ekf.py grid search)
 EKF_Q_POS_STD = 0.5       # m — position process noise std
-EKF_Q_VEL_STD = 1.0       # m/s — velocity process noise std
+EKF_Q_VEL_STD = 2.0       # m/s — velocity process noise std (tuned)
 
 # Measurement noise: GNSS position
 EKF_R_GNSS_POS_STD = 5.0  # m — smartphone GPS accuracy (~5 m)
 
 # Measurement noise: AI velocity correction
-EKF_R_AI_VEL_STD = 0.5    # m/s — trust AI corrections moderately
+EKF_R_AI_VEL_STD = 0.1    # m/s — trust AI corrections (tuned)
 
 # GNSS accuracy threshold — ignore GPS fixes worse than this in the EKF
 GNSS_BLACKOUT_THRESHOLD_M = 50.0

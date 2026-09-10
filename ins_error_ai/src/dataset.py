@@ -24,6 +24,37 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
+def apply_imu_augmentation(X_imu: np.ndarray, ratio: float = config.AUGMENT_RATIO, seed: int = config.RANDOM_SEED):
+    """
+    Augment a fraction (`ratio`) of training windows by adding Gaussian noise & random bias shift.
+    Returns (X_aug, idx_sampled).
+    """
+    if not getattr(config, "AUGMENT_IMU", False) or ratio <= 0:
+        return None, None
+
+    rng = np.random.default_rng(seed)
+    n = len(X_imu)
+    n_aug = int(n * ratio)
+    if n_aug == 0:
+        return None, None
+
+    idx = rng.choice(n, size=n_aug, replace=False)
+    X_aug = X_imu[idx].copy()
+
+    # Accelerometer noise (ch 0..2) & Gyro noise (ch 3..5)
+    acc_noise = rng.normal(0.0, config.AUG_NOISE_ACC_STD, size=(n_aug, X_imu.shape[1], 3))
+    gyro_noise = rng.normal(0.0, config.AUG_NOISE_GYRO_STD, size=(n_aug, X_imu.shape[1], 3))
+
+    # Bias shift per window
+    acc_bias = rng.uniform(-config.AUG_BIAS_ACC_MAX, config.AUG_BIAS_ACC_MAX, size=(n_aug, 1, 3))
+    gyro_bias = rng.uniform(-config.AUG_BIAS_GYRO_MAX, config.AUG_BIAS_GYRO_MAX, size=(n_aug, 1, 3))
+
+    X_aug[:, :, 0:3] += acc_noise + acc_bias
+    X_aug[:, :, 3:6] += gyro_noise + gyro_bias
+
+    return X_aug.astype(np.float32), idx
+
+
 def make_windows_from_session(df: pd.DataFrame):
     """
     Slice one labeled session DataFrame into sliding-window training examples.

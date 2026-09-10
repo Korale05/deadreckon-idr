@@ -18,24 +18,40 @@ import tensorflow as tf
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
-from src.model import build_error_correction_model
+from src.model import build_error_correction_model, gaussian_nll_loss, mean_error_mae, combined_huber_nll_loss
+from src.dataset import apply_imu_augmentation
 
 
-def session_wise_split(session_id, val_split, test_split, seed):
+def session_wise_split(session_id, val_split, test_split, seed, id_to_name=None):
     rng = np.random.default_rng(seed)
     unique_sessions = np.unique(session_id)
     rng.shuffle(unique_sessions)
 
-    n = len(unique_sessions)
-    n_test = max(1, int(n * test_split)) if n > 2 else 0
-    n_val = max(1, int(n * val_split)) if n > 2 else 0
+    # Force explicit test sessions (e.g. S1) into test_sessions set if requested
+    explicit_test = getattr(config, "EXPLICIT_TEST_SESSIONS", [])
+    test_sessions = set()
+    candidate_sessions = []
 
-    test_sessions = set(unique_sessions[:n_test])
-    val_sessions = set(unique_sessions[n_test:n_test + n_val])
-    train_sessions = set(unique_sessions[n_test + n_val:])
+    if id_to_name:
+        for s in unique_sessions:
+            s_name = id_to_name.get(str(int(s)), str(s))
+            if s_name in explicit_test:
+                test_sessions.add(s)
+            else:
+                candidate_sessions.append(s)
+    else:
+        candidate_sessions = list(unique_sessions)
 
-    if not train_sessions:  # tiny dataset (e.g. only 1-2 sessions) fallback
-        train_sessions, val_sessions, test_sessions = set(unique_sessions), set(), set()
+    n_cand = len(candidate_sessions)
+    n_test_needed = max(0, int(len(unique_sessions) * test_split) - len(test_sessions))
+    n_val_needed = max(1, int(len(unique_sessions) * val_split)) if len(unique_sessions) > 2 else 0
+
+    test_sessions.update(candidate_sessions[:n_test_needed])
+    val_sessions = set(candidate_sessions[n_test_needed:n_test_needed + n_val_needed])
+    train_sessions = set(candidate_sessions[n_test_needed + n_val_needed:])
+
+    if not train_sessions:  # fallback
+        train_sessions = set(candidate_sessions)
 
     train_mask = np.isin(session_id, list(train_sessions))
     val_mask = np.isin(session_id, list(val_sessions))
@@ -66,17 +82,16 @@ def apply_normalization(X_imu, X_state, y, stats):
 class RealUnitMAECallback(tf.keras.callbacks.Callback):
     """Print validation MAE in real m/s units (de-normalized) at end of each epoch."""
 
-    def __init__(self, y_mean, y_std):
+    def __init__(self, y_mean, y_std, enable_uncertainty=False):
         super().__init__()
         self.y_mean = y_mean
         self.y_std = y_std
+        self.enable_uncertainty = enable_uncertainty
 
     def on_epoch_end(self, epoch, logs=None):
-        # The logged 'mae' is in normalized units. De-normalize:
-        # normalized_mae * y_std ≈ real_mae  (approximate, but informative)
         if logs:
-            train_mae_n = logs.get("mae", 0)
-            val_mae_n = logs.get("val_mae", None)
+            train_mae_n = logs.get("mae", logs.get("mean_absolute_error", 0))
+            val_mae_n = logs.get("val_mae", logs.get("val_mean_absolute_error", None))
             real_train_mae = train_mae_n * np.mean(np.abs(self.y_std))
             msg = f"  -> Real-unit MAE: train={real_train_mae:.3f} m/s"
             if val_mae_n is not None:
@@ -99,22 +114,33 @@ def main():
     data = np.load(data_path)
     X_imu, X_state, y, session_id = data["X_imu"], data["X_state"], data["y"], data["session_id"]
 
+    manifest_path = data_path.replace(".npz", "_manifest.json")
+    id_to_name = {}
+    if os.path.exists(manifest_path):
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        id_to_name = manifest.get("session_id_to_name", {})
+
     train_mask, val_mask, test_mask, train_sess, val_sess, test_sess = session_wise_split(
-        session_id, config.VAL_SPLIT, config.TEST_SPLIT, config.RANDOM_SEED
+        session_id, config.VAL_SPLIT, config.TEST_SPLIT, config.RANDOM_SEED, id_to_name
     )
 
     X_imu_tr, X_state_tr, y_tr = X_imu[train_mask], X_state[train_mask], y[train_mask]
     X_imu_val, X_state_val, y_val = X_imu[val_mask], X_state[val_mask], y[val_mask]
     X_imu_te, X_state_te, y_te = X_imu[test_mask], X_state[test_mask], y[test_mask]
 
+    # --- Apply IMU Data Augmentation on Training Split (if enabled) ---
+    if getattr(config, "AUGMENT_IMU", False):
+        X_aug, idx_aug = apply_imu_augmentation(X_imu_tr, ratio=config.AUGMENT_RATIO)
+        if X_aug is not None:
+            print(f"[Augmentation] Appending {len(X_aug)} augmented IMU windows to training set.")
+            X_imu_tr = np.concatenate([X_imu_tr, X_aug], axis=0)
+            X_state_tr = np.concatenate([X_state_tr, X_state_tr[idx_aug]], axis=0)
+            y_tr = np.concatenate([y_tr, y_tr[idx_aug]], axis=0)
+
     print(f"Train windows: {len(y_tr)} | Val windows: {len(y_val)} | Test windows: {len(y_te)}")
 
-    # Log the session split for reproducibility/inspection
-    manifest_path = data_path.replace(".npz", "_manifest.json")
-    if os.path.exists(manifest_path):
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        id_to_name = manifest.get("session_id_to_name", {})
+    if id_to_name:
         print(f"\nTrain sessions ({len(train_sess)}): "
               f"{[id_to_name.get(str(int(s)), str(s)) for s in sorted(train_sess)][:10]}...")
         print(f"Val sessions ({len(val_sess)}): "
@@ -133,11 +159,23 @@ def main():
     if len(y_te):
         X_imu_te, X_state_te, y_te = apply_normalization(X_imu_te, X_state_te, y_te, stats)
 
-    model = build_error_correction_model()
+    enable_unc = getattr(config, "ENABLE_UNCERTAINTY_HEAD", False)
+    model = build_error_correction_model(enable_uncertainty=enable_unc)
+
+    if enable_unc:
+        # Dual-Weighted Loss for [err_x, err_y, log_var_x, log_var_y]
+        loss_fn = combined_huber_nll_loss
+        metrics_list = [mean_error_mae]
+        print("[Model] Initialized with 4-output Heteroscedastic Uncertainty Head + Combined Huber-NLL Loss")
+    else:
+        loss_fn = tf.keras.losses.Huber(delta=1.0)
+        metrics_list = ["mae"]
+        print("[Model] Initialized with Standard 2-output Error Prediction Head + Huber Loss")
+
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=config.LEARNING_RATE),
-        loss=tf.keras.losses.Huber(delta=1.0),  # Robust to outlier windows
-        metrics=["mae"],
+        loss=loss_fn,
+        metrics=metrics_list,
     )
     model.summary()
 
@@ -174,10 +212,8 @@ def main():
     # --- Final evaluation in real units ---
     if len(y_val):
         y_val_pred_n = model.predict([X_imu_val, X_state_val], verbose=0)
-        y_val_pred = y_val_pred_n * stats["y_std"] + stats["y_mean"]
-        y_val_real = apply_normalization(
-            X_imu[val_mask], X_state[val_mask], None, stats)[1]  # not needed
-        # De-normalize the actual val targets
+        mean_pred_n = y_val_pred_n[:, :2] if y_val_pred_n.shape[1] >= 2 else y_val_pred_n
+        y_val_pred = mean_pred_n * stats["y_std"] + stats["y_mean"]
         data_reload = np.load(data_path)
         y_val_orig = data_reload["y"][val_mask]
         val_mae_real = np.mean(np.abs(y_val_pred - y_val_orig))
@@ -192,7 +228,8 @@ def main():
 
     if len(y_te):
         y_te_pred_n = model.predict([X_imu_te, X_state_te], verbose=0)
-        y_te_pred = y_te_pred_n * stats["y_std"] + stats["y_mean"]
+        mean_te_n = y_te_pred_n[:, :2] if y_te_pred_n.shape[1] >= 2 else y_te_pred_n
+        y_te_pred = mean_te_n * stats["y_std"] + stats["y_mean"]
         data_reload = np.load(data_path)
         y_te_orig = data_reload["y"][test_mask]
         test_mae_real = np.mean(np.abs(y_te_pred - y_te_orig))

@@ -21,6 +21,7 @@ import tensorflow as tf
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+from src.model import gaussian_nll_loss, mean_error_mae, combined_huber_nll_loss
 
 
 class LiveErrorCorrector:
@@ -28,12 +29,17 @@ class LiveErrorCorrector:
         model_path = model_path or os.path.join(config.MODEL_DIR, "ins_error_model_final.keras")
         stats_path = stats_path or os.path.join(config.MODEL_DIR, "normalization_stats.npz")
 
-        self.model = tf.keras.models.load_model(model_path)
+        custom_objs = {
+            "gaussian_nll_loss": gaussian_nll_loss,
+            "mean_error_mae": mean_error_mae,
+            "combined_huber_nll_loss": combined_huber_nll_loss
+        }
+        self.model = tf.keras.models.load_model(model_path, custom_objects=custom_objs)
         self.stats = np.load(stats_path)
         self.buffer = deque(maxlen=config.WINDOW_SIZE)
 
-        # JIT-compile the prediction call to optimize CPU latency
-        @tf.function(jit_compile=True)
+        # Standard graph function call (jit_compile=False to avoid Windows XLA CPU compilation hangs)
+        @tf.function(jit_compile=False)
         def predict_jit(x_imu, x_state):
             return self.model([x_imu, x_state], training=False)
         self.predict_jit = predict_jit
@@ -55,7 +61,7 @@ class LiveErrorCorrector:
     def ready(self) -> bool:
         return len(self.buffer) == config.WINDOW_SIZE
 
-    def correct(self, ins_state: np.ndarray) -> np.ndarray:
+    def correct(self, ins_state: np.ndarray, return_std: bool = False):
         """
         Predict the INS velocity error given the current IMU buffer + INS state.
 
@@ -63,14 +69,15 @@ class LiveErrorCorrector:
         ----------
         ins_state : np.ndarray, shape (2,)
             [ins_vel_x, ins_vel_y]
+        return_std : bool, optional
+            If True, also returns the predicted standard deviation [std_x, std_y] (in m/s).
 
         Returns
         -------
-        np.ndarray, shape (2,)
-            [err_vel_x, err_vel_y] — the predicted velocity error.
-
-            To get corrected velocity:
-                corrected_vel = ins_state + predicted_err   (ADDITION)
+        err_vel : np.ndarray, shape (2,)
+            [err_vel_x, err_vel_y] — predicted velocity error.
+        std_vel : np.ndarray, shape (2,), optional
+            [std_x, std_y] — predicted standard deviation in m/s (if model has uncertainty head).
         """
         if not self.ready():
             raise RuntimeError(
@@ -91,11 +98,28 @@ class LiveErrorCorrector:
         X_state_n = np.nan_to_num(X_state_n, nan=0.0, posinf=0.0, neginf=0.0)
 
         pred_n = self.predict_jit(X_imu_n, X_state_n).numpy()[0]
-        pred = pred_n * self.stats["y_std"] + self.stats["y_mean"]
 
-        # Final NaN/Inf guard on output
-        pred = np.nan_to_num(pred, nan=0.0, posinf=0.0, neginf=0.0)
-        return pred  # [err_vel_x, err_vel_y]
+        if len(pred_n) >= 4:
+            mean_n = pred_n[:2]
+            log_var_n = pred_n[2:]
+            log_var_clamped = np.clip(log_var_n, getattr(config, "LOG_VAR_MIN", -7.0), getattr(config, "LOG_VAR_MAX", 7.0))
+            
+            pred_err = mean_n * self.stats["y_std"] + self.stats["y_mean"]
+            pred_std = np.sqrt(np.exp(log_var_clamped)) * self.stats["y_std"]
+
+            pred_err = np.nan_to_num(pred_err, nan=0.0, posinf=0.0, neginf=0.0)
+            pred_std = np.nan_to_num(pred_std, nan=config.EKF_R_AI_VEL_STD, posinf=config.EKF_R_AI_VEL_STD, neginf=config.EKF_R_AI_VEL_STD)
+            
+            if return_std:
+                return pred_err, pred_std
+            return pred_err
+        else:
+            pred_err = pred_n[:2] * self.stats["y_std"] + self.stats["y_mean"]
+            pred_err = np.nan_to_num(pred_err, nan=0.0, posinf=0.0, neginf=0.0)
+            if return_std:
+                std_fallback = np.full(2, config.EKF_R_AI_VEL_STD, dtype=np.float32)
+                return pred_err, std_fallback
+            return pred_err
 
 
 if __name__ == "__main__":

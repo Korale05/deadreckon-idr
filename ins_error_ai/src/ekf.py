@@ -170,8 +170,16 @@ class NavigationEKF:
         """
         H = self.H_ai
         z = corrected_vel
-        if r_std is not None and r_std > 0:
-            R = np.diag([r_std**2, r_std**2])
+        if r_std is not None:
+            r_arr = np.maximum(0.05, np.atleast_1d(r_std))
+            if r_arr.ndim == 1 and len(r_arr) == 2:
+                R = np.diag([r_arr[0]**2, r_arr[1]**2])
+            elif r_arr.ndim == 1 and len(r_arr) == 1 and r_arr[0] > 0:
+                R = np.diag([r_arr[0]**2, r_arr[0]**2])
+            elif r_arr.ndim == 2 and r_arr.shape == (2, 2):
+                R = r_arr
+            else:
+                R = self.R_ai
         else:
             R = self.R_ai
 
@@ -231,15 +239,17 @@ class NavigationEKF:
     @property
     def position_uncertainty(self) -> float:
         """1-sigma position uncertainty (meters)."""
-        return np.sqrt(self.P[0, 0] + self.P[1, 1])
+        val = max(0.0, float(self.P[0, 0] + self.P[1, 1]))
+        return np.sqrt(val)
 
     @property
     def velocity_uncertainty(self) -> float:
         """1-sigma velocity uncertainty (m/s)."""
-        return np.sqrt(self.P[2, 2] + self.P[3, 3])
+        val = max(0.0, float(self.P[2, 2] + self.P[3, 3]))
+        return np.sqrt(val)
 
 
-def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
+def run_ekf_fusion(ins_df, ai_corrections=None, ai_stds=None, gnss_available=None,
                    gnss_pos=None, gnss_accuracy=None, gnss_sats=None,
                    use_seamless_switching=True):
     """
@@ -333,7 +343,8 @@ def run_ekf_fusion(ins_df, ai_corrections=None, gnss_available=None,
                 ins_vel_x[i] + ai_corrections[i, 0],
                 ins_vel_y[i] + ai_corrections[i, 1],
             ])
-            ekf.update_ai_velocity(corrected_vel)
+            r_std = ai_stds[i] if (ai_stds is not None and i < len(ai_stds)) else None
+            ekf.update_ai_velocity(corrected_vel, r_std=r_std)
 
             # Apply Non-Holonomic Constraint (NHC) when in DEGRADED or LOST mode for land vehicle
             if current_mode in [NavigationMode.DEGRADED.value, NavigationMode.LOST.value]:
